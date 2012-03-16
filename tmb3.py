@@ -171,8 +171,8 @@ class TransformiceSocket(threading.Thread):
         self.server_type = 0
         self.parent.server_room = DeadSocket(self.parent)
         self.connect()
-        with open("/home/http/kikoo.formice.com/data.txt", 'r') as data:
-            ts, version, key = tuple(data.readlines()[0].replace("\n", '').split(" "))
+        data = urllib.request.urlopen("http://kikoo.formice.com/data.txt")
+        ts, version, key = tuple(data.split(" "))
         log.info("Protocol version {}, key {} (reterived {} secs ago)".format(int(version), key, time.time()-float(ts)))
         self.send_packet(P['VERSION'], int(version), key, 0x17ed)
         #self.dummy = RepeatedPingThread(self.send_dummy)
@@ -264,7 +264,7 @@ class TransformiceSocket(threading.Thread):
             except socket.error:
                 return
             else:
-                if packet_len == b"":
+                if packet_len == b"" or len(packet_len) != 4:
                     self.reconnect()
                 else:
                     self.packet_len = struct.unpack(">I", packet_len)[0]-4
@@ -294,7 +294,10 @@ class TransformiceSocket(threading.Thread):
             if ccc == P['OLD_PROTOCOL']:
                 len_args, c, cc = struct.unpack(">HBB", packet[:4])
                 #args = list(tuple(subarg.decode('utf-8')) for subarg in (arg.split('\x02') for arg in (packet[5:].rstrip(b'\x00').split(b'\x01'))))
-                args = list(arg.decode('utf-8') for arg in (packet[5:].rstrip(b'\x00').split(b'\x01')))
+                #args = list(arg.decode('utf-8') for arg in (packet[5:].rstrip(b'\x00').split(b'\x01')))
+                #args = list(arg for arg in (tuple(subarg.decode('utf-8') for subarg in arg.split(b'\x02')) if b'\x02' in arg else arg for arg in args))
+                args = list(arg for arg in (tuple(subarg.decode('utf-8') for subarg in arg.split(b'\x02')) if b'\x02' in arg else arg.decode('utf-8') for arg in (packet[5:].rstrip(b'\x00').split(b'\x01'))))
+                
                 ccc = (c, cc, 'old')
                 if ccc in PN:
                     name = PN[ccc]
@@ -324,10 +327,10 @@ class TransformiceSocket(threading.Thread):
             args = tuple(args)
             logmsg = " [{}]<<< {}: {}".format(self.server_type, name, args)
         except Exception as ex:
-            emsg = "Failed at parsing packet: [{}]<<< {}: {}".format(self.server_type, ccc, packet)
+            emsg = "Failed at parsing packet: {} [{}]<<< {}: {}".format(ex, self.server_type, ccc, packet)
             log.error(emsg)
             self.parent.send_tribe_message("[ERROR] "+emsg)
-            raise
+            #raise
         else:
             if ccc in PF or ccc in PN:
                 log.debug (logmsg)
@@ -348,7 +351,7 @@ class TransformiceSocket(threading.Thread):
                 print(flash, verify)'''
                 
                 self.send_packet(P['COMMUNITY'], self.parent.community)
-                self.send_packet(P['CLIENT_INFO'], 'en', 'Linux 2.6.35-29-generic-pae', 'LNX 10,2,159,1')#'tmb3.py', 'n/a')
+                self.send_packet(P['CLIENT_INFO'], 'en', 'Linux 2.6.35-29-generic-pae', 'tmb3.py')#'tmb3.py', 'n/a')
                 #self.send_packet(P['VERIFY'], *verify)
                 #self.send_packet(P['LOG_IN'], 'Thisisatest', '', 1)
                 self.send_packet(P['LOG_IN'], self.parent.username, self.parent.password, 'fdsafdsa fdsafdas fsafdsa')
@@ -422,12 +425,14 @@ class TransformiceSocket(threading.Thread):
             elif ccc == P['NEW_FINGERPRINT']:
                 self.begin_fingerprint(*args)
             elif ccc == P['NEW_MAP']:
+                self.send_packet(P['ANTI_AFKILL'])
                 if len(args) == 4:
                     atnum, unk1, round_num, unk2 = args
                     self.round_num = int(round_num)
                     self.parent.on_new_map(atnum)
                 else:
-                    atnum, unk1, round_num, unk2, xml = args
+                    atnum, unk1, round_num, unk2, map_data = args
+                    xml, author, num = map_data
                     self.round_num = int(round_num)
                     self.parent.on_new_map(atnum, xml)
                 
@@ -496,9 +501,10 @@ class TransformiceSocket(threading.Thread):
                 item_id, y, x, u1, u2, ghost = args
                 self.parent.on_item_spawn(*args)
                 #b'\x00\x00\x01\x00\x01\x00\x00\x00\x00\x00\x01
-            elif ccc == P['DEATH']:
-                mouse_id, = args
-                self.parent.on_mouse_death(int(mouse_id))
+            elif ccc == P['MOUSE_DEATH']:
+                #pass #TODO XXX et al ValueError: too many values to unpack (expected 2)
+                points, playersleft, mouse_id = args
+                self.parent.on_mouse_death(int(mouse_id), int(playersleft))
             elif ccc == P['SNOWING']:
                 self.parent.on_snow()
             elif ccc == P['SHOP']:
@@ -528,7 +534,11 @@ class TransformiceSocket(threading.Thread):
         self.send_packet(P['DUMMY'])
 
     def step(self):
-        self.recv()
+        try:
+            self.recv()
+        except Exception as ex:
+            self.parent.send_tribe_message("Crashed: {}".format(ex))
+            self.reconnect()
         
     def run(self):
         #log.info("LOOK AT ME I'M {} AND I'M STARTED".format(self.server_type))
@@ -592,6 +602,9 @@ class TransformiceProtocol():
         return None
     # Shortcuts
     def change_room(self, room):
+        room = str(room)
+        if room.startswith("en-"):
+            room = room[3:]
         self.server_main.send_packet(P['COMMAND'], "room {}".format(room))
         self.follow_BULLE = True
     def play_map(self, map_num, map_type = None):
@@ -614,7 +627,7 @@ class TransformiceProtocol():
     def sleep(self): self.emote(6)
     def facepalm(self): self.emote(7)
     def sit(self): self.emote(8)
-    def hidden(self): self.emote(9)
+    def confetti(self): self.emote(9)
     def crouch(self): self.server_room.send_packet(P['CROUCH'], 1)
     def stand(self): self.server_room.send_packet(P['CROUCH'], 0)
 
@@ -663,8 +676,9 @@ class TransformiceProtocol():
     
     def cycle_room(self):
         logging.info("Cycling current room...")
-        self.server_main.send_packet(P['COMMAND'], 'room temp fjdlkafjasflk sajf')
         self.oldroom = self.room
+        self.server_main.send_packet(P['COMMAND'], 'room temp fjdlkafjasflk sajf')
+        log.warning('OLDROOM IS {}'.format(self.oldroom))
         if self.oldroom.startswith('en-'):
             self.oldroom = self.oldroom[3:]
         # XXX THIS IS UGLY AND THE SECOND HALF MUST BE IN on_room_change
@@ -680,7 +694,7 @@ class TransformiceProtocol():
     def on_mouse_movement(self, round_num, run, y, x, hfriction, vfriction, jump, casting, mouse_id): pass
     def on_mouse_cheese(self, mouse_id): pass
     def on_mouse_enter_hole(self, mouse_id, secs, position, players_left): pass
-    def on_mouse_death(self, mouse_id): pass
+    def on_mouse_death(self, mouse_id, playersleft): pass
     def on_mouse_emotion(self, mouse_id, emotion): pass
     def on_mouse_crouch(self, mouse_id, crouching): pass
     def on_start_shaman_turn(self, shaman): pass
