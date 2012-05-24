@@ -1,3 +1,4 @@
+#!/bin/python3
 import socket
 import struct
 import hashlib
@@ -22,42 +23,6 @@ formatter = logging.Formatter('[%(asctime)s] %(levelname)s: {%(funcName)s} %(mes
 sh.setFormatter(formatter)
 #log.addHandler(fh)
 log.addHandler(sh)
-
-# I don't think this has ever worked.
-def upload_avatar(filename, verification):
-    log.info("Uploading avatar {}...".format(filename))
-    conn = http.client.HTTPConnection("avatar.transformice.com")
-    with open(filename, "rb") as f:
-        d = f.read()
-        data = b"""------------------------------712d3eb50c2d
-Content-Disposition: form-data; name="Filename"
-
-"""+filename.encode('utf-8')+b"""
-
-------------------------------712d3eb50c2d
-Content-Disposition: form-data; name="Filedata"; filename=\""""+filename.encode('utf-8')+b"""\"
-Content-Type: application/octet-stream
-"""+d+b"""
-------------------------------712d3eb50c2d
-Content-Disposition: form-data; name="Upload"
-
-
-Submit Query
-------------------------------712d3eb50c2d--"""
-    headers = {"Host": "avatar.transformice.com",
-    "User-Agent": "Shockwave Flash",
-    "Accept": "Text/*",
-    "Content-Length": str(len(data)),
-    "Content-Type": "Content-Type: multipart/form-data; boundary=----------------------------712d3eb50c2d"}
-    
-    url = "/i.php?n={}".format(verification)
-    
-    try:
-        conn.request('POST', url, data, headers)
-        r = conn.getresponse()
-        log.info("Uploaded avatar: {}".format(r.read()))
-    except Exception as ex:
-        log.error("Upload failed: ".format(ex))     
 
 # This looks a bit ugly, but does its job.
 packets = open('packets.csv', 'r')
@@ -125,12 +90,14 @@ class DeadSocket(threading.Thread):
         pass
 
 class TransformiceSocket(threading.Thread): 
-    def __init__(self, parent, server="serveur2.transformice.com",  username="", password=""): #176.31.234.223 176.31.101.37 46.105.104.210 46.105.102.209
+    def __init__(self, parent, server="serveur2.transformice.com",  username="", password="", default_room="tmdevs"): #176.31.234.223 176.31.101.37 46.105.104.210 46.105.102.209
         threading.Thread.__init__(self)
         self.parent = parent
         
         self.username = username
         self.password = password
+        
+        self.default_room = default_room # This shouldn't be /here/, but it is.  Sigh!
         
         self.server = server
         self.port = 44444
@@ -361,7 +328,7 @@ class TransformiceSocket(threading.Thread):
                 self.send_packet(P['CLIENT_INFO'], 'en', 'Linux 2.6.35-29-generic-pae', 'tmb3.py')#'tmb3.py', 'n/a')
                 #self.send_packet(P['VERIFY'], *verify)
                 #self.send_packet(P['LOG_IN'], 'Thisisatest', '', 1)
-                self.send_packet(P['LOG_IN'], self.parent.username, self.parent.password, 'Owl default room', 'http://www.transformice.com/Transformice.swf?n=1335716949137')
+                self.send_packet(P['LOG_IN'], self.parent.username, self.parent.password, self.default_room, 'http://www.transformice.com/Transformice.swf?n=1335716949137')
                 #self.dummy.start()
             elif ccc == P['PING']:
                 #self.ping_t = time.time()+10
@@ -728,4 +695,22 @@ class TransformiceProtocol():
     def on_shop_opened(self, money, items): pass
     #def on_titles(self, titles): pass
     
-
+if __name__ == "__main__":
+    # Here's an example bot!
+    # Note: I haven't even tested it.
+    class ExampleBot(TransformiceProtocol):
+        def on_login(self):
+            self.change_room("My test room")
+        
+        def on_room_message(self, name, message):
+            if "dance" in message:
+                self.dance()
+            elif "clap" in message:
+                self.clap()
+            elif "die" in message:
+                self.die()
+            else:
+                self.send_room_message("Hi {0}!  I can speak too!".format(name))
+        
+    bot = ExampleBot('Username', "Password", 0)
+    bot.connect()
