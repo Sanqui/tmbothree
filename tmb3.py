@@ -125,7 +125,7 @@ class DeadSocket(threading.Thread):
         pass
 
 class TransformiceSocket(threading.Thread): 
-    def __init__(self, parent, server="46.105.104.210",  username="", password=""): #46.105.102.209
+    def __init__(self, parent, server="serveur2.transformice.com",  username="", password=""): #176.31.234.223 176.31.101.37 46.105.104.210 46.105.102.209
         threading.Thread.__init__(self)
         self.parent = parent
         
@@ -171,9 +171,15 @@ class TransformiceSocket(threading.Thread):
         self.server_type = 0
         self.parent.server_room = DeadSocket(self.parent)
         self.connect()
-        data = urllib.request.urlopen("http://kikoo.formice.com/data.txt")
-        ts, version, key = tuple(data.split(" "))
-        log.info("Protocol version {}, key {} (reterived {} secs ago)".format(int(version), key, time.time()-float(ts)))
+        while True:
+            try:
+                data = urllib.request.urlopen("http://kikoo.formice.com/data.txt").read()
+                ts, version, key = tuple(data.decode('utf-8').split(" "))
+                log.info("Protocol version {}, key {} (reterived {} secs ago)".format(int(version), key, time.time()-float(ts)))
+                break
+            except Exception as ex:
+                log.error("Can't get key: {}, data was {}".format(ex, data))
+                time.sleep(3)
         self.send_packet(P['VERSION'], int(version), key, 0x17ed)
         #self.dummy = RepeatedPingThread(self.send_dummy)
         self.dummy.enabled = True
@@ -296,7 +302,8 @@ class TransformiceSocket(threading.Thread):
                 #args = list(tuple(subarg.decode('utf-8')) for subarg in (arg.split('\x02') for arg in (packet[5:].rstrip(b'\x00').split(b'\x01'))))
                 #args = list(arg.decode('utf-8') for arg in (packet[5:].rstrip(b'\x00').split(b'\x01')))
                 #args = list(arg for arg in (tuple(subarg.decode('utf-8') for subarg in arg.split(b'\x02')) if b'\x02' in arg else arg for arg in args))
-                args = list(arg for arg in (tuple(subarg.decode('utf-8') for subarg in arg.split(b'\x02')) if b'\x02' in arg else arg.decode('utf-8') for arg in (packet[5:].rstrip(b'\x00').split(b'\x01'))))
+                
+                args = list(arg for arg in (tuple(subarg.decode('utf-8', 'replace') for subarg in arg.split(b'\x02')) if b'\x02' in arg else arg.decode('utf-8') for arg in (packet[5:].rstrip(b'\x00').split(b'\x01'))))
                 
                 ccc = (c, cc, 'old')
                 if ccc in PN:
@@ -354,7 +361,7 @@ class TransformiceSocket(threading.Thread):
                 self.send_packet(P['CLIENT_INFO'], 'en', 'Linux 2.6.35-29-generic-pae', 'tmb3.py')#'tmb3.py', 'n/a')
                 #self.send_packet(P['VERIFY'], *verify)
                 #self.send_packet(P['LOG_IN'], 'Thisisatest', '', 1)
-                self.send_packet(P['LOG_IN'], self.parent.username, self.parent.password, 'fdsafdsa fdsafdas fsafdsa')
+                self.send_packet(P['LOG_IN'], self.parent.username, self.parent.password, 'Owl default room', 'http://www.transformice.com/Transformice.swf?n=1335716949137')
                 #self.dummy.start()
             elif ccc == P['PING']:
                 #self.ping_t = time.time()+10
@@ -477,6 +484,7 @@ class TransformiceSocket(threading.Thread):
                 mouse_id, players_left, points, position, secs = args
                 #log.info("enthole, "+str(args))
                 self.parent.on_mouse_enter_hole(int(mouse_id), int(secs), int(position), int(players_left))
+                self.parent.on_player_amount_change(int(players_left))
                 #[2011-09-26 20:46:43] WARNING:  [1]<<< (8, 6, 'old'): ('5202891', '2', '44', '6', '805')
             elif ccc == P['SHAMAN_SAVES']:
                 name, saves = args
@@ -505,6 +513,7 @@ class TransformiceSocket(threading.Thread):
                 #pass #TODO XXX et al ValueError: too many values to unpack (expected 2)
                 points, playersleft, mouse_id = args
                 self.parent.on_mouse_death(int(mouse_id), int(playersleft))
+                self.parent.on_player_amount_change(int(playersleft))
             elif ccc == P['SNOWING']:
                 self.parent.on_snow()
             elif ccc == P['SHOP']:
@@ -536,7 +545,8 @@ class TransformiceSocket(threading.Thread):
     def step(self):
         try:
             self.recv()
-        except Exception as ex:
+        except Exception as ex: 
+            raise
             self.parent.send_tribe_message("Crashed: {}".format(ex))
             self.reconnect()
         
@@ -695,6 +705,7 @@ class TransformiceProtocol():
     def on_mouse_cheese(self, mouse_id): pass
     def on_mouse_enter_hole(self, mouse_id, secs, position, players_left): pass
     def on_mouse_death(self, mouse_id, playersleft): pass
+    def on_player_amount_change(self, players_left): pass
     def on_mouse_emotion(self, mouse_id, emotion): pass
     def on_mouse_crouch(self, mouse_id, crouching): pass
     def on_start_shaman_turn(self, shaman): pass
