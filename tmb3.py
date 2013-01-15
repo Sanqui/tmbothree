@@ -9,6 +9,8 @@ import urllib.request
 import os.path
 import threading
 import re
+import sys
+import requests
 
 # Setting up logs.
 import logging
@@ -23,6 +25,8 @@ formatter = logging.Formatter('[%(asctime)s] %(levelname)s: {%(funcName)s} %(mes
 sh.setFormatter(formatter)
 #log.addHandler(fh)
 log.addHandler(sh)
+
+PARTICLES = {'hearts': 5, 'bubbles': 6, 'meep': 20, 'lightning': 26}
 
 # This looks a bit ugly, but does its job.
 packets = open('packets.csv', 'r')
@@ -61,7 +65,7 @@ class PingThread(threading.Thread):
         if self.enabled: self.callback()
         
 class RepeatedPingThread(threading.Thread):
-    def __init__ (self, callback, times=15):
+    def __init__ (self, callback, times=12):
         threading.Thread.__init__(self)
         self.callback = callback
         self.times = times
@@ -90,7 +94,7 @@ class DeadSocket(threading.Thread):
         pass
 
 class TransformiceSocket(threading.Thread): 
-    def __init__(self, parent, server="serveur2.transformice.com",  username="", password="", default_room="tmdevs"): #176.31.234.223 176.31.101.37 46.105.104.210 46.105.102.209
+    def __init__(self, parent, server="176.31.235.211",  username="", password="", default_room="Default room."): #176.31.234.223 176.31.101.37 46.105.104.210 46.105.102.209 176.31.235.211
         threading.Thread.__init__(self)
         self.parent = parent
         
@@ -123,7 +127,7 @@ class TransformiceSocket(threading.Thread):
     def connect(self):
         log.info("Connecting.")
         #self.dummy.enabled = False
-        self.ping.enabled = False
+        #self.ping.enabled = False
         while True:
             try:
                 self.conn = socket.socket()
@@ -139,15 +143,19 @@ class TransformiceSocket(threading.Thread):
         self.parent.server_room = DeadSocket(self.parent)
         self.connect()
         while True:
+            json = None
+            
             try:
-                data = urllib.request.urlopen("http://kikoo.formice.com/data.txt").read()
-                ts, version, key = tuple(data.decode('utf-8').split(" "))
-                log.info("Protocol version {}, key {} (reterived {} secs ago)".format(int(version), key, time.time()-float(ts)))
+                json = requests.get("http://kikoo.formice.com/data.json", auth=(JSONUSERNAME, JSONPASSWORD)).json()
+                #txt = requests.get("http://kikoo.formice.com/data.txt").text
+                self.codes = {int(c):int(newc) for c, newc in json['codes'].items() if newc != ""}
+                ts, version, key = 0, json['version'], json['key']#tuple(str(txt).split(" "))
+                #log.info("Protocol version {}, key {} (reterived {} secs ago)".format(int(version), key, time.time()-float(ts)))
                 break
             except Exception as ex:
-                log.error("Can't get key: {}, data was {}".format(ex, data))
+                log.error("Can't get key: {}, txt was {}, json was {}".format(ex, "nothing", json))
                 time.sleep(3)
-        self.send_packet(P['VERSION'], int(version), key, 0x17ed)
+        self.send_packet(P['VERSION'], int(version), key, 0x17ed, 'a', 'b', 'c', 'd', 'hi tig')
         #self.dummy = RepeatedPingThread(self.send_dummy)
         self.dummy.enabled = True
         #self.dummy.start()
@@ -163,11 +171,15 @@ class TransformiceSocket(threading.Thread):
         self.start()
 
     def reconnect(self):
+        if self.parent.disconnect_is_fatal:
+            log.error("Disconnected.")
+            sys.exit(2)
         self.ping.enabled = False
         self.dummy.enabled = False
-        time.sleep(4)
+        time.sleep(7)
         if self.server_type == 0: 
             log.error(" [{}] Disconnected; reconnecting..".format(self.server_type))
+            time.sleep(3)
             self.connect_main()
         elif self.server_type==1:
             #self.connect_room()
@@ -184,9 +196,19 @@ class TransformiceSocket(threading.Thread):
         self._end = True
     
     def send_packet(self, ccc, *args):
+        codes = self.parent.server_main.codes
         log.debug (" [{}]>>> {}: {}".format(self.server_type, PN[ccc], args))
         if ccc in PF:
-            packet = struct.pack(">BB", *ccc[0:2])
+            if ccc not in (P['VERSION'], P["BULLE"]):
+                try:
+                    c2 = codes[ccc[0]], codes[ccc[1]]
+                except KeyError as e:
+                    log.error("Code {0} not in code mappings.  Attempted to send {1}, {2}".format(e, PN[ccc], args))
+                    #self.disconnect()
+                    return False
+            else:
+                c2 = ccc[0:2]
+            packet = struct.pack(">BB", *c2)
             format = PF[ccc][1]
             assert len(format) == len(args)
             if format == '*':
@@ -203,7 +225,7 @@ class TransformiceSocket(threading.Thread):
                 args = b"\x01"+b"\x01".join(str(arg).encode('utf-8', 'replace') for arg in args)
             else:
                 args = b""
-            packet = struct.pack(">BBHBB", 1, 1, len(args)+2, *ccc[0:2])+args
+            packet = struct.pack(">BBHBB", codes[1], codes[1], len(args)+2, *ccc[0:2])+args
         self.send(packet)
 
     def begin_fingerprint(self, pMDT, CMDTEC):
@@ -443,7 +465,7 @@ class TransformiceSocket(threading.Thread):
             elif ccc == P['SERVER_RESTART']:
                 restime, = args
                 log.info("[SERVER_RESTART] {}".format(restime))
-            elif ccc == P['GET_CHEESE']:
+            elif ccc == P['GET_CHEESE_RECV']:
                 mouse_id, = args
                 mouse_id = int(mouse_id)
                 self.parent.on_mouse_cheese(mouse_id)
@@ -503,8 +525,9 @@ class TransformiceSocket(threading.Thread):
                 name, unk1, reason = args #unk1 is prolly time
             
     def send_ping(self):
-        self.send_packet(P['PING'], self.server_type)
-        self.send_packet(P['OLDPING'], self.server_type)
+        log.debug("I would reply to a ping, but I'm not gonna.")
+        #self.send_packet(P['PING'], self.server_type)
+        #self.send_packet(P['OLDPING'], self.server_type)
         
     def send_dummy(self): 
         self.send_packet(P['DUMMY'])
@@ -524,7 +547,8 @@ class TransformiceSocket(threading.Thread):
                 self.step()
             except Exception as ex:
                 self.parent.send_tribe_message("!!! FATAL ERROR: {}".format(ex))
-                self.disconnect()
+                self.reconnect()
+                #self.disconnect()
                 raise
             #expcet KeyboardInterrupt as ex:
             #    self.parent.send
@@ -532,10 +556,11 @@ class TransformiceSocket(threading.Thread):
                 return
 
 class TransformiceProtocol():
-    def __init__(self, username, password, community, prefix="[???]"):
+    def __init__(self, username, password, community, prefix="[???]", disconnect_is_fatal=False):
         self.username = username
         self.password = hashlib.sha256(password.encode('utf-8')).hexdigest() if len(password) else ""
         self.prefix = prefix
+        self.disconnect_is_fatal = disconnect_is_fatal
         
         self.community = community
         
@@ -558,7 +583,7 @@ class TransformiceProtocol():
         self.map_type = None
         self.hearts = 0
         self.titles = []
-        self.follow_BULLE = False
+        self.follow_BULLE = True
         
         self.shaman = None
         
@@ -582,7 +607,10 @@ class TransformiceProtocol():
         room = str(room)
         if room.startswith("en-"):
             room = room[3:]
-        self.server_main.send_packet(P['COMMAND'], "room {}".format(room))
+        if room.startswith('*\x03'):
+            self.enter_tribe_house()
+        else:
+            self.server_main.send_packet(P['COMMAND'], "room {}".format(room))
         self.follow_BULLE = True
     def play_map(self, map_num, map_type = None):
         self.server_main.send_packet(P['COMMAND'], "np {}".format(map_num))
@@ -620,11 +648,10 @@ class TransformiceProtocol():
         self.server_room.send_packet(P['MOVEMENT'], self.server_room.round_num, run, y, x, hfriction, vfriction, jump, 0, casting)
     
     def get_cheese(self):
-        self.server_room.send_packet(P['GET_CHEESE'], self.server_room.round_num)
+        self.server_room.send_packet(P['GET_CHEESE'], self.server_room.round_num, random.randint(2, 9999))
         
     def enter_hole(self):
-        log.info("Entering hole!")
-        self.server_room.send_packet(P['ENTER_HOLE'], 0, self.server_room.round_num)
+        self.server_room.send_packet(P['ENTER_HOLE'], 0, self.server_room.round_num, random.randint(2, 9999))
     
     def verify_avatar(self):
         self.server_main.send_packet(P['AVATAR'])
@@ -641,6 +668,9 @@ class TransformiceProtocol():
     
     def spawn_item_under_self(self, item_id, ghost=1):
         self.spawn_item(item_id, self.y, self.x+20, 0, 0, ghost)
+    
+    def particle(self, particle, x, y, num, speed, gravity, vfriction):
+        self.server_room.send_packet(P['PARTICLE'], particle, int(y//3.3325), int(x//3.3325), num, speed, gravity, vfriction)
         
     def open_shop(self):
         self.server_main.send_packet(P['SHOP'])
@@ -650,6 +680,7 @@ class TransformiceProtocol():
     
     def set_title(self, title):
         self.server_main.send_packet(P['COMMAND'], 'title {}'.format(title))
+    
     
     def cycle_room(self):
         logging.info("Cycling current room...")
