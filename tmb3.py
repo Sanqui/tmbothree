@@ -20,7 +20,7 @@ log.setLevel(logging.INFO)
 #fh = logging.FileHandler("log.txt")
 sh = logging.StreamHandler()
 
-formatter = logging.Formatter('[%(asctime)s] %(levelname)s: {%(funcName)s} %(message)s')
+formatter = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s')
 #fh.setFormatter(formatter)
 sh.setFormatter(formatter)
 #log.addHandler(fh)
@@ -106,9 +106,11 @@ class TransformiceSocket(threading.Thread):
         self.server = server
         self.port = 44444
         self.conn = socket.socket()
+        self.connecting = False
 
         self.CMDTEC = 0
         self.MDT = [0]*10
+        self.dynamiccrap = None
         
         self.packet_len = None
         self.packet = b""
@@ -128,6 +130,7 @@ class TransformiceSocket(threading.Thread):
         log.info("Connecting.")
         #self.dummy.enabled = False
         #self.ping.enabled = False
+        self.connecting = True
         while True:
             try:
                 self.conn = socket.socket()
@@ -136,6 +139,7 @@ class TransformiceSocket(threading.Thread):
                 log.error("Can't connect, retrying..")
                 time.sleep(11.25)
             else:
+                self.connecting = False
                 break
     
     def connect_main(self):
@@ -146,15 +150,15 @@ class TransformiceSocket(threading.Thread):
             json = None
             
             try:
-                json = requests.get("http://kikoo.formice.com/data.json", auth=(JSONUSERNAME, JSONPASSWORD)).json()
+                json = requests.get("http://kikoo.formice.com/data.json", auth=(self.parent.jsonusername, self.parent.jsonpassword)).json()
                 #txt = requests.get("http://kikoo.formice.com/data.txt").text
                 self.codes = {int(c):int(newc) for c, newc in json['codes'].items() if newc != ""}
-                ts, version, key = 0, json['version'], json['key']#tuple(str(txt).split(" "))
+                time, version, key, self.dynamiccrap = 0, json['version'], json['key'], "".join(chr(a) for a in json['seckey'])[3:]#tuple(str(txt).split(" "))
                 #log.info("Protocol version {}, key {} (reterived {} secs ago)".format(int(version), key, time.time()-float(ts)))
                 break
             except Exception as ex:
                 log.error("Can't get key: {}, txt was {}, json was {}".format(ex, "nothing", json))
-                time.sleep(3)
+                time.sleep(6)
         self.send_packet(P['VERSION'], int(version), key, 0x17ed, 'a', 'b', 'c', 'd', 'hi tig')
         #self.dummy = RepeatedPingThread(self.send_dummy)
         self.dummy.enabled = True
@@ -222,7 +226,7 @@ class TransformiceSocket(threading.Thread):
                         packet += struct.pack(">"+char, arg)
         else:
             if len(args) > 0:
-                args = b"\x01"+b"\x01".join(str(arg).encode('utf-8', 'replace') for arg in args)
+                args = b"\x01"+b"\x01".join((str(arg) if type(arg) != str else arg).encode('utf-8', 'replace') for arg in args)
             else:
                 args = b""
             packet = struct.pack(">BBHBB", codes[1], codes[1], len(args)+2, *ccc[0:2])+args
@@ -246,11 +250,12 @@ class TransformiceSocket(threading.Thread):
 
     def send(self, packet):
         packet = struct.pack(">I", len(packet)+8)+self.generate_fingerprint()+packet
-        try:
-            self.conn.send(packet)
-            log.debug(packet)
-        except socket.error:
-            self.reconnect()
+        if not self.connecting:
+            try:
+                self.conn.send(packet)
+                log.debug(packet)
+            except socket.error:
+                self.reconnect()
 
     def recv(self):
         if self.packet_len is None:
@@ -357,6 +362,8 @@ class TransformiceSocket(threading.Thread):
                 self.ping.enabled = False
                 self.ping = PingThread(self.send_ping)
                 self.ping.start()
+            elif ccc == P["VERSION"]:
+                self.send_packet(P['DYNAMICCRAP'], self.dynamiccrap)
             elif ccc == P['LOGGED_IN']:
                 log.info("Logged in.")
                 self.parent.on_login()
@@ -465,6 +472,7 @@ class TransformiceSocket(threading.Thread):
             elif ccc == P['SERVER_RESTART']:
                 restime, = args
                 log.info("[SERVER_RESTART] {}".format(restime))
+                self.parent.on_server_restart(restime)
             elif ccc == P['GET_CHEESE_RECV']:
                 mouse_id, = args
                 mouse_id = int(mouse_id)
@@ -525,9 +533,9 @@ class TransformiceSocket(threading.Thread):
                 name, unk1, reason = args #unk1 is prolly time
             
     def send_ping(self):
-        log.debug("I would reply to a ping, but I'm not gonna.")
+        #log.debug("I would reply to a ping, but I'm not gonna.")
         #self.send_packet(P['PING'], self.server_type)
-        #self.send_packet(P['OLDPING'], self.server_type)
+        self.send_packet(P['OLDPING'], self.server_type)
         
     def send_dummy(self): 
         self.send_packet(P['DUMMY'])
@@ -556,9 +564,11 @@ class TransformiceSocket(threading.Thread):
                 return
 
 class TransformiceProtocol():
-    def __init__(self, username, password, community, prefix="[???]", disconnect_is_fatal=False):
+    def __init__(self, username, password, community, jsonusername, jsonpassword, prefix="[???]", disconnect_is_fatal=False):
         self.username = username
         self.password = hashlib.sha256(password.encode('utf-8')).hexdigest() if len(password) else ""
+        self.jsonusername = jsonusername
+        self.jsonpassword = jsonpassword
         self.prefix = prefix
         self.disconnect_is_fatal = disconnect_is_fatal
         
@@ -664,10 +674,11 @@ class TransformiceProtocol():
         self.server_main.send_packet(P['COMMAND'], "musique "+url)
         
     def spawn_item(self, item_id, y, x, u1, u2, ghost):
-        self.server_room.send_packet(P['SPAWN_ITEM'], item_id, int(y//3.3325), int(x//3.3325), u1, u2, ghost)
+        self.server_room.send_packet(P['SPAWN_ITEM'], item_id, int(y//3.3325), int(x//3.3325), u1, u2, ghost, 0)
     
     def spawn_item_under_self(self, item_id, ghost=1):
-        self.spawn_item(item_id, self.y, self.x+20, 0, 0, ghost)
+        pass
+        #self.spawn_item(item_id, self.y, self.x+20, 0, 0, ghost)
     
     def particle(self, particle, x, y, num, speed, gravity, vfriction):
         self.server_room.send_packet(P['PARTICLE'], particle, int(y//3.3325), int(x//3.3325), num, speed, gravity, vfriction)
@@ -675,12 +686,20 @@ class TransformiceProtocol():
     def open_shop(self):
         self.server_main.send_packet(P['SHOP'])
     
+    def command(self, command):
+        self.server_main.send_packet(P['COMMAND'], command)
+    
     def list_titles(self):
-        self.server_main.send_packet(P['COMMAND'], 'title')
+        self.command('title')
     
     def set_title(self, title):
-        self.server_main.send_packet(P['COMMAND'], 'title {}'.format(title))
+        self.command('title {}'.format(title))
     
+    def set_next_shaman(self, name):
+        self.command('ch {}'.format(name))
+    
+    def set_sync(self, name):
+        self.command('sy {}'.format(name))
     
     def cycle_room(self):
         logging.info("Cycling current room...")
@@ -724,6 +743,7 @@ class TransformiceProtocol():
     def on_tribe_chat_enable(self,name): pass
     def on_avatar_verified(self, verification): pass
     def on_shop_opened(self, money, items): pass
+    def on_server_restart(self, resttime): pass
     #def on_titles(self, titles): pass
     
 if __name__ == "__main__":
